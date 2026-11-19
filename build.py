@@ -395,8 +395,8 @@ def rec_distance(x, series):
 
 def rec_csv(rec, series):
     lines = ["date,time_bkk,pair,direction,cross_rate,current_rate,distance,unit,distance_atr,grade"]
-    for day in sorted(rec["days"], reverse=True):
-        for x in sorted(rec["days"][day], key=lambda x: (x["time_bkk"], x["symbol"]), reverse=True):
+    for day in sorted(rec["days"]):   # chronological: earliest signal first
+        for x in sorted(rec["days"][day], key=lambda x: (x["time_bkk"], x["symbol"])):
             cur, nat, a = rec_distance(x, series)
             dp = x["decimals"]
             lines.append(",".join([day, x["time_bkk"], x["symbol"], x["direction"], f"{x['cross_rate']:.{dp}f}",
@@ -611,7 +611,7 @@ def rec_tab(rec, h1, clock1):
     days = sorted(rec["days"], reverse=True)
     blocks = []
     for k, day in enumerate(days[:REC_DAYS_SHOWN]):
-        lst = sorted(rec["days"][day], key=lambda x: (x["time_bkk"], x["symbol"]), reverse=True)
+        lst = sorted(rec["days"][day], key=lambda x: (x["time_bkk"], x["symbol"]))   # earliest first
         rows, fav, tot = [], 0, 0
         for x in lst:
             cur, nat, a = rec_distance(x, h1)
