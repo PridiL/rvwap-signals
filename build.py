@@ -5,9 +5,8 @@ Publishes https://pridil.github.io/rvwap-signals/ with two tabs:
   Hourly   every symbol's last closed 1H price against its Daily VWAP and its 1H Rolling
            VWAP, plus the 1H closes that crossed the 1H RVWAP this hour
            (cross up = LONG, cross down = SHORT).
-  Record   recommendations.json / .csv: day by day (Bangkok date), the first 1H cross up and the
-           first 1H cross down of each pair per day (repeats the same way that day are dropped),
-           with the distance from the cross rate to the current rate. Kept forever.
+  Record   recommendations.json / .csv: day by day (Bangkok date), every 1H cross of every pair
+           (repeats included), with the distance from the cross rate to the current rate. Kept forever.
            recommendations_4h.json / .csv: the same for 4H crosses (own tab).
   4-hour   the original rule: the 4H close crossing the 4H Rolling VWAP.
 
@@ -78,7 +77,7 @@ TF = {
 }
 MIN_BARS = 10        # the 'Bars' input of the template's RVWAP
 BACKFILL = 48        # bars back to look for crosses a skipped run missed
-REC_FILE = "recommendations.json"   # day-by-day record: first 1H cross up / down per pair per Bangkok day
+REC_FILE = "recommendations.json"   # day-by-day record of every 1H cross, by Bangkok day
 REC_FILE_4H = "recommendations_4h.json"   # the same for 4H crosses
 
 
@@ -350,27 +349,28 @@ def score(x, s):
 
 
 def update_recs(rec, series, clock_close):
-    """Recommendation record. Each 1H close crossing the 1H RVWAP is recorded under its Bangkok date,
-    but only the FIRST cross up and the FIRST cross down of each pair on that date: a later cross the
-    same way on the same day is a repeat and is not recorded again. Never trimmed."""
-    through = parse_utc(rec["through"]) if rec.get("through") else None
-    if through is None:   # first run: start of today, Bangkok
-        d0 = datetime.fromtimestamp(clock_close, BKK).replace(hour=0, minute=0, second=0, microsecond=0)
-        through = d0.timestamp() - 1
+    """Recommendation record: EVERY close crossing the RVWAP, under its Bangkok date, repeats included
+    (a pair crossing back the same day is recorded again). Each run re-scans the last BACKFILL bars and
+    adds any cross not yet in the record, so skipped runs fill in. Never trimmed."""
+    if not rec.get("start"):   # the record's first day, 00:00 Bangkok; nothing earlier is added
+        first = min(rec.get("days") or {}, default=None)
+        d0 = (datetime.strptime(first, "%Y-%m-%d").replace(tzinfo=BKK) if first else
+              datetime.fromtimestamp(clock_close, BKK).replace(hour=0, minute=0, second=0, microsecond=0))
+        rec["start"] = d0.strftime("%Y-%m-%d")
+    start = datetime.strptime(rec["start"], "%Y-%m-%d").replace(tzinfo=BKK).timestamp()
     days = rec.setdefault("days", {})
+    have = {(x["symbol"], x["bar_close_utc"]) for lst in days.values() for x in lst}
     found = []
     for sym, s in series.items():
         for i in range(max(1, s.last - BACKFILL + 1), s.last + 1):
             ct = s.close_ts(i)
             d = s.cross_at(i)
-            if d and through < ct <= clock_close:
+            if d and start < ct <= clock_close and (sym, utc_str(ct)) not in have:
                 found.append((ct, sym, i, d))
     added = []
     for ct, sym, i, d in sorted(found):
         day = datetime.fromtimestamp(ct, BKK).strftime("%Y-%m-%d")
         lst = days.setdefault(day, [])
-        if any(x["symbol"] == sym and x["direction"] == d for x in lst):
-            continue
         s = series[sym]
         st = s.state(i)
         x = {"date": day, "time_bkk": datetime.fromtimestamp(ct, BKK).strftime("%H:%M"), "bar_close_utc": utc_str(ct),
@@ -641,8 +641,8 @@ def rec_tab(rec, h1, clock1, tf="1H"):
     return f"""
 <div class="headline">{tf} recommendation record - {tf} Rolling VWAP crosses, day by day</div>
 <p class="rule">Every pair whose {cand} candle <b>closed</b> across its {tf} Rolling VWAP is recorded with the date and the time the candle
-closed (Bangkok): cross up = <b>LONG</b>, cross down = <b>SHORT</b>. <b>No repeats:</b> once a pair has crossed up on a day, a later cross
-up by the same pair that day is not recorded again (same for cross down); a new day starts fresh at 00:00 Bangkok.
+closed (Bangkok): cross up = <b>LONG</b>, cross down = <b>SHORT</b>. <b>Every cross is recorded</b>, including a pair crossing back
+again later the same day, so a pair can appear several times in a day.
 <b>Cross rate</b> = the close of the candle that crossed. <b>Distance</b> = current rate (the last closed 1H candle, {bkk_str(clock1, False)})
 minus the cross rate, in the signal&rsquo;s direction: + = moving the recommended way, &minus; = against it. Pips for FX, points for indices;
 ATR = the {tf} ATR when the cross happened. Every cross is listed, whatever its grade. The record is kept permanently and updated every hour.</p>
