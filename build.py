@@ -422,6 +422,45 @@ def record(state, tf, since):
             f'Logged from {since}. Showing the latest 150.</p>')
 
 
+def by_candle(series_map, tf, clock, n):
+    """Every RVWAP cross on each of the last `n` closed candles, all symbols, nothing filtered.
+    Worked out from the bars themselves, so an hour the cloud run skipped still shows up."""
+    secs = TF[tf]["secs"]
+    lo = clock - n * secs
+    rows = {}
+    for sym, s in series_map.items():
+        for i in range(max(1, s.last - n - 2), s.last + 1):
+            ct = s.close_ts(i)
+            if not lo < ct <= clock:
+                continue
+            slot = rows.setdefault(ct, {"LONG": [], "SHORT": [], "bars": 0})
+            slot["bars"] += 1
+            d = s.cross_at(i)
+            if d:
+                st = s.state(i)
+                slot[d].append((sym, grade(st, 1 if d == "LONG" else -1), st, s.dp))
+    out = []
+    for ct in sorted(rows, reverse=True):
+        slot = rows[ct]
+        if slot["bars"] < 3 and not (slot["LONG"] or slot["SHORT"]):
+            continue   # market shut, not a real candle for the board
+
+        def chips(lst, d):
+            if not lst:
+                return '<span class="mut">–</span>'
+            return "".join(
+                f"<span class='chip {d}' title='close {fmt(st['close'], dp)} · RVWAP {fmt(st['rvwap'], dp)} · "
+                f"{(st['dist_atr'] or 0):+.2f} ATR · grade {g}'>{esc(sym)}<i>{g}</i></span>"
+                for sym, g, st, dp in sorted(lst))
+        cur = " class='now'" if ct == clock else ""
+        n_all = len(slot["LONG"]) + len(slot["SHORT"])
+        out.append(f"<tr{cur}><td class='l'>{bkk_str(ct, False)}</td><td>{n_all}</td>"
+                   f"<td class='l wrapc'>{chips(slot['LONG'], 'LONG')}</td><td class='l wrapc'>{chips(slot['SHORT'], 'SHORT')}</td></tr>")
+    head = ("<tr><th class='l'>Candle closed (BKK)</th><th>Crosses</th><th class='l'>Crossed up → LONG</th>"
+            "<th class='l'>Crossed down → SHORT</th></tr>")
+    return table(head, out, "No candles in this window.")
+
+
 def table(head, rows, empty):
     if not rows:
         return f'<div class="box small">{empty}</div>'
@@ -488,6 +527,9 @@ its 1H RVWAP = a cross: up (previous close at or below, this close above) = <b>L
 Grades and stop refs work as on the 4-hour tab, measured in 1H ATR. Distances are in pips (FX) or index points; + = price above.</p>
 {tiles}
 <section><h3>1H crosses this hour</h3>{table(H1_HEAD, fr, 'No 1H close crossed its 1H Rolling VWAP this hour.')}</section>
+<section><h3>Every 1H candle, last 24 hours - all symbols that crossed</h3>{by_candle(h1, '1H', clock1, 24)}
+<p class="small mut">Every cross is listed, whatever its grade - nothing is filtered out. The letter after each symbol is its grade (a label for your own screening);
+hover a symbol for its close, RVWAP and distance. Built from the bars each hour, so it is complete even if an hourly run was skipped. Weekend hours are left out.</p></section>
 <section><h3>Whole board - price against Daily VWAP and 1H RVWAP</h3>{table(BOARD_HEAD, board, 'No data.')}
 <p class="small mut">Sorted by distance from the 1H RVWAP in 1H ATR. "Last bar" = that market has not printed a new 1H candle this hour (closed or on a break).</p></section>
 <section><h3>History of the 1H rule (last ~500 1H bars per symbol, all symbols pooled)</h3>{pooled(h1, '1H')}
@@ -553,6 +595,9 @@ Grade A = clean cross (0.3-2 ATR past RVWAP) with RVWAP sloping the same way, on
 C = hair-thin (&lt;0.15 ATR) or whipsawing (&ge;6 crosses). Stop ref = beyond RVWAP and the signal bar, at least 0.7 x ATR away.
 This tab changes only when a new 4H candle closes.</p>
 <section><h3>Fresh crosses on the last 4H candle</h3>{table(SIG_HEAD, [r for _, r in fr], 'No 4H close crossed its Rolling VWAP on this candle.')}</section>
+<section><h3>Every 4H candle, last 5 days - all symbols that crossed</h3>{by_candle(h4, '4H', clock4, 30)}
+<p class="small mut">Every cross is listed, whatever its grade - nothing is filtered out. The letter after each symbol is its grade; hover a symbol for its close,
+RVWAP and distance. A few index feeds print a short 4H candle at their session open, so an odd time can appear with just those indices.</p></section>
 <section><h3>Crossed 1-3 bars ago and still holding</h3>{table(SIG_HEAD, [r for _, r in lv], 'None.')}</section>
 <section><h3>Whole board - where price sits against the 4H RVWAP</h3>{table(bhead, board, 'No data.')}</section>
 <section><h3>History of this rule (last ~450 4H bars per symbol, all symbols pooled)</h3>{pooled(h4, '4H')}
@@ -592,6 +637,10 @@ section{margin-top:26px}section>h3{font-size:15px;margin:0 0 10px}
 .gA{background:var(--longbg);color:var(--long)}.gB{background:var(--chip);color:var(--accent)}.gC{background:var(--chip);color:var(--muted)}
 .above{color:var(--long)}.below{color:var(--short)}.mixed{color:var(--muted)}
 .rule{max-width:960px;color:var(--ink2);margin:0 0 16px}
+.hist table td.wrapc{white-space:normal}
+.chip{display:inline-block;font-size:12px;font-weight:600;padding:1px 7px;margin:2px 4px 2px 0;border-radius:5px;cursor:default}
+.chip i{font-style:normal;font-weight:500;opacity:.65;margin-left:4px;font-size:11px}
+.hist table tr.now td{background:var(--chip)}
 .disc{margin-top:30px;color:var(--muted);font-size:12px}a{color:var(--accent)}
 """
 
