@@ -1,0 +1,105 @@
+# Rolling VWAP Signals, rebuilt every hour on GitHub's servers (laptop on or off).
+# Publishes https://pridil.github.io/rvwap-signals/.
+#
+# Bars: TradingView's public chart websocket (fetch_ohlcv_ws.mjs), 1H / 4H / 1D for the
+# 28 OANDA pairs + 9 index CFDs. build.py computes the Daily VWAP, 1H and 4H Rolling VWAPs,
+# logs every close cross and renders the page.
+#
+# WHEN: every hour a few minutes after the 1H candle closes. The real trigger is an
+# external cron (cron-job.org) calling workflow_dispatch, because GitHub's own schedule
+# starts late or not at all on this account; the schedule below is only a backup.
+# Publishes only when the last closed EURUSD 1H candle differs from the live page's
+# stamp.txt, so extra or late runs are harmless. force=true always publishes.
+#
+# State: the signal logs are part of the published site and build.py reads them back
+# from the live page first; if that read fails the run fails and nothing is lost.
+# Market shut (Fri 17:10 to Sun 17:00 New York): skipped before anything is fetched.
+name: RVWAP hourly
+on:
+  schedule:
+    - cron: "9 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Publish even if the 1H candle has not moved"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: rvwap-pages
+  cancel-in-progress: false
+env:
+  PYTHONIOENCODING: utf-8
+  NODE_EXE: node
+  PAGES_URL: https://pridil.github.io/rvwap-signals/
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      publish: ${{ steps.guard.outputs.publish }}
+      stamp: ${{ steps.guard.outputs.stamp }}
+    steps:
+      - name: Market open?
+        id: market
+        run: |
+          read dow hm < <(TZ=America/New_York date '+%u %H%M')
+          if [ $dow -eq 6 ] || { [ $dow -eq 5 ] && [ $hm -ge 1710 ]; } || { [ $dow -eq 7 ] && [ $hm -lt 1700 ]; }; then
+            if [ "${{ inputs.force }}" != "true" ]; then
+              echo "open=false" >> "$GITHUB_OUTPUT"; echo "FX market shut (NY dow=$dow $hm) - nothing to do"; exit 0
+            fi
+          fi
+          echo "open=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.market.outputs.open == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.market.outputs.open == 'true'
+        with: { node-version: "24" }
+      - uses: actions/setup-python@v5
+        if: steps.market.outputs.open == 'true'
+        with: { python-version: "3.13" }
+
+      - name: Build (fresh bars; one retry on failure)
+        if: steps.market.outputs.open == 'true'
+        run: python build.py || { echo "build failed - retrying in 60 s"; sleep 60; python build.py; }
+
+      - name: New 1H candle?
+        id: guard
+        if: steps.market.outputs.open == 'true'
+        run: |
+          stamp=$(cat site/stamp.txt)
+          live=$(curl -sf "${PAGES_URL}stamp.txt?v=$RANDOM$RANDOM" || true)
+          echo "built: '$stamp'   live: '$live'"
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          if [ "$stamp" = "$live" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"; echo "No new 1H candle - not publishing."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.guard.outputs.publish == 'true'
+        with: { path: site }
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@v4
+      - name: Confirm the live page shows this candle
+        run: |
+          want="${{ needs.build.outputs.stamp }}"
+          for i in $(seq 1 30); do
+            [ "$(curl -sf "${PAGES_URL}stamp.txt?v=$RANDOM$RANDOM")" = "$want" ] && { echo "OK: live page is at '$want'"; exit 0; }
+            sleep 20
+          done
+          echo "::error::live page did not reach '$want' within 10 minutes"; exit 1
