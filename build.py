@@ -8,6 +8,7 @@ Publishes https://pridil.github.io/rvwap-signals/ with two tabs:
   Record   recommendations.json / .csv: day by day (Bangkok date), the first 1H cross up and the
            first 1H cross down of each pair per day (repeats the same way that day are dropped),
            with the distance from the cross rate to the current rate. Kept forever.
+           recommendations_4h.json / .csv: the same for 4H crosses (own tab).
   4-hour   the original rule: the 4H close crossing the 4H Rolling VWAP.
 
 VWAPs are TradingView's own, as saved in the Pridi chart template:
@@ -78,6 +79,7 @@ TF = {
 MIN_BARS = 10        # the 'Bars' input of the template's RVWAP
 BACKFILL = 48        # bars back to look for crosses a skipped run missed
 REC_FILE = "recommendations.json"   # day-by-day record: first 1H cross up / down per pair per Bangkok day
+REC_FILE_4H = "recommendations_4h.json"   # the same for 4H crosses
 
 
 def pip_size(sym):
@@ -286,7 +288,7 @@ def load_state(name):
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 seed = ROOT / "seed" / name
-                empty = {"through": None, "days": {}} if name == REC_FILE else {"through": None, "signals": []}
+                empty = {"through": None, "days": {}} if name in (REC_FILE, REC_FILE_4H) else {"through": None, "signals": []}
                 data = json.loads(seed.read_text(encoding="utf-8")) if seed.exists() else empty
                 print(f"state {name}: not on the site yet - starting from {'seed' if seed.exists() else 'empty'}")
                 return data
@@ -607,7 +609,9 @@ REC_HEAD = ("<tr><th class='l'>Time (BKK)</th><th class='l'>Pair</th><th class='
 REC_DAYS_SHOWN = 60
 
 
-def rec_tab(rec, h1, clock1):
+def rec_tab(rec, h1, clock1, tf="1H"):
+    stem = "recommendations" if tf == "1H" else "recommendations_4h"
+    cand = "1-hour" if tf == "1H" else "4-hour"
     days = sorted(rec["days"], reverse=True)
     blocks = []
     for k, day in enumerate(days[:REC_DAYS_SHOWN]):
@@ -635,14 +639,14 @@ def rec_tab(rec, h1, clock1):
     older = (f'<p class="small mut">Showing the latest {REC_DAYS_SHOWN} days; older days are in the download.</p>'
              if len(days) > REC_DAYS_SHOWN else "")
     return f"""
-<div class="headline">Recommendation record - 1H Rolling VWAP crosses, day by day</div>
-<p class="rule">Every pair whose 1-hour candle <b>closed</b> across its 1H Rolling VWAP is recorded with the date and the time the candle
+<div class="headline">{tf} recommendation record - {tf} Rolling VWAP crosses, day by day</div>
+<p class="rule">Every pair whose {cand} candle <b>closed</b> across its {tf} Rolling VWAP is recorded with the date and the time the candle
 closed (Bangkok): cross up = <b>LONG</b>, cross down = <b>SHORT</b>. <b>No repeats:</b> once a pair has crossed up on a day, a later cross
 up by the same pair that day is not recorded again (same for cross down); a new day starts fresh at 00:00 Bangkok.
 <b>Cross rate</b> = the close of the candle that crossed. <b>Distance</b> = current rate (the last closed 1H candle, {bkk_str(clock1, False)})
 minus the cross rate, in the signal&rsquo;s direction: + = moving the recommended way, &minus; = against it. Pips for FX, points for indices;
-ATR = the 1H ATR when the cross happened. Every cross is listed, whatever its grade. The record is kept permanently and updated every hour.</p>
-<p class="small"><a href="recommendations.csv" download>Download the full record (CSV)</a> · <a href="recommendations.json">raw data (JSON)</a></p>
+ATR = the {tf} ATR when the cross happened. Every cross is listed, whatever its grade. The record is kept permanently and updated every hour.</p>
+<p class="small"><a href="{stem}.csv" download>Download the full {tf} record (CSV)</a> · <a href="{stem}.json">raw data (JSON)</a></p>
 {body}{older}"""
 
 
@@ -767,7 +771,7 @@ show(k0||'h1');
 """
 
 
-def render(view, h1, h4, clock1, clock4, state1, state4, rec, missing):
+def render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, missing):
     miss = (f'<p class="small mut">No data this run for: {esc(", ".join(missing))}.</p>' if missing else "")
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -776,11 +780,13 @@ def render(view, h1, h4, clock1, clock4, state1, state4, rec, missing):
 <span class="meta">1H candle closed {bkk_str(clock1)} Bangkok · updates every hour · 28 FX pairs + 9 indices · <a href="{DESK}">AI Trade Desk →</a></span></header>
 <div class="tabs" role="tablist">
 <button class="tab" role="tab" data-k="h1" aria-selected="true">Hourly: Daily VWAP + 1H RVWAP</button>
-<button class="tab" role="tab" data-k="rec" aria-selected="false">Recommendation record</button>
+<button class="tab" role="tab" data-k="rec" aria-selected="false">1H recommendation record</button>
+<button class="tab" role="tab" data-k="rec4" aria-selected="false">4H recommendation record</button>
 <button class="tab" role="tab" data-k="h4" aria-selected="false">4-hour RVWAP crosses</button></div>
 {miss}
 <div class="pane" id="pane-h1">{hourly_tab(view, h1, h4, clock1, state1)}</div>
 <div class="pane" id="pane-rec" hidden>{rec_tab(rec, h1, clock1)}</div>
+<div class="pane" id="pane-rec4" hidden>{rec_tab(rec4, h1, clock1, "4H")}</div>
 <div class="pane" id="pane-h4" hidden>{four_tab(h4, clock4, state4)}</div>
 <p class="disc">Generated automatically every hour from TradingView prices. A mechanical signal, not a trade recommendation and not
 financial advice. Levels can be wrong or stale; check the chart before acting.</p>
@@ -843,13 +849,16 @@ def main():
     new4 = update_log(state4, h4, "4H", clock4)
     rec = load_state(REC_FILE)
     new_rec = update_recs(rec, h1, clock1)
+    rec4 = load_state(REC_FILE_4H)
+    new_rec4 = update_recs(rec4, h4, clock4)
     print(f"1H candle {utc_str(clock1)} UTC, 4H candle {utc_str(clock4)} UTC; missing: {missing or 'none'}")
     print("new 1H crosses: " + (", ".join(f"{x['symbol']} {x['direction']} ({x['grade']}) @{x['bar_close_utc'][11:]}" for x in new1) or "none"))
     print("new 4H crosses: " + (", ".join(f"{x['symbol']} {x['direction']} ({x['grade']}) @{x['bar_close_utc'][11:]}" for x in new4) or "none"))
 
     print("new recommendations: " + (", ".join(f"{x['symbol']} {x['direction']} @{x['date']} {x['time_bkk']}" for x in new_rec) or "none"))
+    print("new 4H recommendations: " + (", ".join(f"{x['symbol']} {x['direction']} @{x['date']} {x['time_bkk']}" for x in new_rec4) or "none"))
 
-    page = render(view, h1, h4, clock1, clock4, state1, state4, rec, missing)
+    page = render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, missing)
     latest = {"built_utc": utc_str(now), "bar_1h_close_utc": utc_str(clock1), "bar_4h_close_utc": utc_str(clock4),
               "signals_1h": [x for x in state1["signals"] if x["bar_close_utc"] == utc_str(clock1)],
               "signals_4h": [x for x in state4["signals"] if x["bar_close_utc"] == utc_str(clock4)],
@@ -859,6 +868,7 @@ def main():
     files = {"index.html": page, "latest.json": json.dumps(latest, indent=1),
              "signals_1h.json": json.dumps(state1, indent=0), "signals_4h.json": json.dumps(state4, indent=0),
              REC_FILE: json.dumps(rec, indent=0), "recommendations.csv": rec_csv(rec, h1),
+             REC_FILE_4H: json.dumps(rec4, indent=0), "recommendations_4h.csv": rec_csv(rec4, h1),
              "stamp.txt": utc_str(clock1)}
     for name, text in files.items():
         problems = privacy_scan(text)
