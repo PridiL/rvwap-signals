@@ -10,6 +10,8 @@ Publishes https://pridil.github.io/rvwap-signals/ with two tabs:
            recommendations_4h.json / .csv: the same for 4H crosses (own tab).
            recommendations_1d.json / .csv: daily candles crossing the Daily RVWAP at the US close
            (17:00 New York), dated by the US trading day (own tab).
+  Slope    every symbol's 1H, 4H and Daily RVWAP slope on the last closed candle (RVWAP now minus one
+           candle earlier: positive / negative), how long it has kept that sign (slopes.json too).
   4-hour   the original rule: the 4H close crossing the 4H Rolling VWAP.
 
 VWAPs are TradingView's own, as saved in the Pridi chart template:
@@ -621,6 +623,80 @@ hover a symbol for its close, RVWAP and distance. Built from the bars each hour,
 <section><h3>Track record of 1H signals shown on this page</h3>{record(state1, '1H', since)}</section>"""
 
 
+# ---------------------------------------------------------------- slope tab
+def slope_info(S):
+    """Slope of the RVWAP on the last closed candle: RVWAP now minus RVWAP one candle earlier,
+    plus how many candles in a row it has kept that sign."""
+    rv, i = S.rv, S.last
+    if i < 1 or rv[i] is None or rv[i - 1] is None:
+        return None
+    d = rv[i] - rv[i - 1]
+    sg = (d > 0) - (d < 0)
+    run = 0
+    for j in range(i, 0, -1):
+        if rv[j] is None or rv[j - 1] is None or ((rv[j] - rv[j - 1] > 0) - (rv[j] - rv[j - 1] < 0)) != sg:
+            break
+        run += 1
+    A = S.a[i]
+    return {"sign": sg, "native": d / S.pip, "atr": d / A if A else None, "run": run,
+            "rvwap": rv[i], "unit": S.unit, "dp": S.dp, "close_ts": S.close_ts()}
+
+
+def slope_cells(x, word):
+    if x is None:
+        return "<td class='mut'>–</td>" * 4
+    cls, txt = ("above", "&#9650; Positive") if x["sign"] > 0 else ("below", "&#9660; Negative") if x["sign"] < 0 else ("mut", "Flat")
+    return (f"<td class='l {cls}'><b>{txt}</b></td>{sgn_fmt(x['native'], 1)}{sgn_fmt(x['atr'], 3)}"
+            f"<td>{x['run']} {word}{'s' if x['run'] != 1 else ''}</td>")
+
+
+SLOPE_HEAD = ("<tr><th class='l'>Symbol</th><th class='l'>1H RVWAP slope</th><th>Change (pips/pts)</th><th>(1H ATR)</th><th>Same sign for</th>"
+              "<th class='l'>4H RVWAP slope</th><th>Change (pips/pts)</th><th>(4H ATR)</th><th>Same sign for</th>"
+              "<th class='l'>Daily RVWAP slope</th><th>Change (pips/pts)</th><th>(daily ATR)</th><th>Same sign for</th>"
+              "<th class='l'>1H · 4H · Daily</th></tr>")
+
+
+def slopes(h1, h4, hd):
+    return {s: {"1H": slope_info(h1[s]) if s in h1 else None, "4H": slope_info(h4[s]) if s in h4 else None,
+                "1D": slope_info(hd[s]) if s in hd else None}
+            for s in TV if s in h1 or s in h4 or s in hd}
+
+
+def slope_tab(sl, clock1, clock4, clockd):
+    def both(v):
+        sg = [(v[k] or {}).get("sign", 0) for k in ("1H", "4H", "1D")]
+        return ("all positive", "above", 0) if all(x > 0 for x in sg) else ("all negative", "below", 2) if all(x < 0 for x in sg)             else ("mixed", "mixed", 1)
+    rows = []
+    for s in sorted(sl, key=lambda s: (both(sl[s])[2], s)):
+        v = sl[s]
+        txt, cls, _ = both(v)
+        rows.append(f"<tr><td class='l'><b>{esc(s)}</b></td>{slope_cells(v['1H'], 'candle')}{slope_cells(v['4H'], 'candle')}{slope_cells(v['1D'], 'day')}"
+                    f"<td class='l {cls}'>{txt}</td></tr>")
+    n = len(sl)
+    p1 = sum(1 for v in sl.values() if (v["1H"] or {}).get("sign", 0) > 0)
+    p4 = sum(1 for v in sl.values() if (v["4H"] or {}).get("sign", 0) > 0)
+    pd = sum(1 for v in sl.values() if (v["1D"] or {}).get("sign", 0) > 0)
+    bu = sum(1 for v in sl.values() if both(v)[2] == 0)
+    bd = sum(1 for v in sl.values() if both(v)[2] == 2)
+    tiles = (f'<div class="stats"><div class="stat"><b>{p1} / {n}</b><span>1H RVWAP sloping up</span></div>'
+             f'<div class="stat"><b>{p4} / {n}</b><span>4H RVWAP sloping up</span></div>'
+             f'<div class="stat"><b>{pd} / {n}</b><span>Daily RVWAP sloping up</span></div>'
+             f'<div class="stat"><b class="above">{bu}</b><span>all three positive</span></div>'
+             f'<div class="stat"><b class="below">{bd}</b><span>all three negative</span></div></div>')
+    dtxt = (datetime.fromtimestamp(clockd, NY).strftime("%a %d %b") + " (US close, " +
+            datetime.fromtimestamp(clockd, BKK).strftime("%H:%M") + " Bangkok)") if clockd else "–"
+    return f"""
+<div class="headline">Slope of the Rolling VWAP - 1H candle closed {datetime.fromtimestamp(clock1, BKK):%H:%M} · 4H candle closed {bkk_str(clock4, False)} · daily candle closed {dtxt}</div>
+<p class="rule"><b>Slope</b> = the Rolling VWAP on the last closed candle minus the Rolling VWAP one candle earlier: <b>Positive</b> = rising,
+<b>Negative</b> = falling. 1H uses the template&rsquo;s 1H RVWAP (automatic 1-day period); 4H the 4H RVWAP (automatic 3-day period); Daily uses the Daily RVWAP (automatic 30.4375-day period),
+both hlc3, tick-volume weighted, minimum 10 bars. The change is shown in pips (FX) or index points and as a share of that timeframe&rsquo;s ATR.
+<b>Same sign for</b> = how many candles in a row the slope has had this sign. Recalculated automatically: the 1H columns change every hour, the 4H columns when a 4H candle closes,
+the Daily columns when the daily candle closes at the US close (17:00 New York).</p>
+{tiles}
+{table(SLOPE_HEAD, rows, 'No data.')}
+<p class="small mut">Sorted: all three positive first, then mixed, then all three negative.</p>"""
+
+
 # ---------------------------------------------------------------- recommendation record tab
 REC_HEAD = ("<tr><th class='l'>Time (BKK)</th><th class='l'>Pair</th><th class='l'>Signal</th><th>Grade</th><th>Cross rate</th>"
             "<th>Current rate</th><th>Distance</th><th>Distance (ATR)</th></tr>")
@@ -794,7 +870,7 @@ show(k0||'h1');
 """
 
 
-def render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missing):
+def render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missing, sl=None, clockd=None):
     miss = (f'<p class="small mut">No data this run for: {esc(", ".join(missing))}.</p>' if missing else "")
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -803,12 +879,14 @@ def render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missin
 <span class="meta">1H candle closed {bkk_str(clock1)} Bangkok · updates every hour · 28 FX pairs + 9 indices · <a href="{DESK}">AI Trade Desk →</a></span></header>
 <div class="tabs" role="tablist">
 <button class="tab" role="tab" data-k="h1" aria-selected="true">Hourly: Daily VWAP + 1H RVWAP</button>
+<button class="tab" role="tab" data-k="slope" aria-selected="false">RVWAP slope: 1H, 4H, Daily</button>
 <button class="tab" role="tab" data-k="rec" aria-selected="false">1H recommendation record</button>
 <button class="tab" role="tab" data-k="rec4" aria-selected="false">4H recommendation record</button>
 <button class="tab" role="tab" data-k="recd" aria-selected="false">Daily (US close) record</button>
 <button class="tab" role="tab" data-k="h4" aria-selected="false">4-hour RVWAP crosses</button></div>
 {miss}
 <div class="pane" id="pane-h1">{hourly_tab(view, h1, h4, clock1, state1)}</div>
+<div class="pane" id="pane-slope" hidden>{slope_tab(sl or {}, clock1, clock4, clockd)}</div>
 <div class="pane" id="pane-rec" hidden>{rec_tab(rec, h1, clock1)}</div>
 <div class="pane" id="pane-rec4" hidden>{rec_tab(rec4, h1, clock1, "4H")}</div>
 <div class="pane" id="pane-recd" hidden>{rec_tab(recd, h1, clock1, "1D")}</div>
@@ -882,6 +960,7 @@ def main():
     recd = load_state(REC_FILE_1D)
     clockd = max(S.close_ts() for S in hd.values()) if hd else None
     new_recd = update_recs(recd, hd, clockd, NY, DAILY_START) if hd else []
+    sl = slopes(h1, h4, hd)
     print(f"1H candle {utc_str(clock1)} UTC, 4H candle {utc_str(clock4)} UTC; missing: {missing or 'none'}")
     print("new 1H crosses: " + (", ".join(f"{x['symbol']} {x['direction']} ({x['grade']}) @{x['bar_close_utc'][11:]}" for x in new1) or "none"))
     print("new 4H crosses: " + (", ".join(f"{x['symbol']} {x['direction']} ({x['grade']}) @{x['bar_close_utc'][11:]}" for x in new4) or "none"))
@@ -891,7 +970,7 @@ def main():
     print(f"daily: {len(hd)} symbols, last US close {utc_str(clockd) if clockd else '-'} UTC; new daily recommendations: "
           + (", ".join(f"{x['symbol']} {x['direction']} @{x['date']}" for x in new_recd) or "none"))
 
-    page = render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missing)
+    page = render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missing, sl, clockd)
     latest = {"built_utc": utc_str(now), "bar_1h_close_utc": utc_str(clock1), "bar_4h_close_utc": utc_str(clock4),
               "signals_1h": [x for x in state1["signals"] if x["bar_close_utc"] == utc_str(clock1)],
               "signals_4h": [x for x in state4["signals"] if x["bar_close_utc"] == utc_str(clock4)],
@@ -903,6 +982,10 @@ def main():
              REC_FILE: json.dumps(rec, indent=0), "recommendations.csv": rec_csv(rec, h1),
              REC_FILE_4H: json.dumps(rec4, indent=0), "recommendations_4h.csv": rec_csv(rec4, h1),
              REC_FILE_1D: json.dumps(recd, indent=0), "recommendations_1d.csv": rec_csv(recd, h1),
+             "slopes.json": json.dumps({s: {k: None if x is None else {"slope": "positive" if x["sign"] > 0 else "negative" if x["sign"] < 0 else "flat",
+                                                              "change": round(x["native"], 2), "change_atr": None if x["atr"] is None else round(x["atr"], 4),
+                                                              "same_sign_candles": x["run"], "candle_close_utc": utc_str(x["close_ts"])}
+                                          for k, x in v.items()} for s, v in sl.items()}, indent=1),
              "stamp.txt": utc_str(clock1)}
     for name, text in files.items():
         problems = privacy_scan(text)
