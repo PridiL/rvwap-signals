@@ -670,7 +670,9 @@ def slope_tab(sl, clock1, clock4, clockd):
     for s in sorted(sl, key=lambda s: (both(sl[s])[2], s)):
         v = sl[s]
         txt, cls, _ = both(v)
-        rows.append(f"<tr><td class='l'><b>{esc(s)}</b></td>{slope_cells(v['1H'], 'candle')}{slope_cells(v['4H'], 'candle')}{slope_cells(v['1D'], 'day')}"
+        sg = {k: {1: "pos", -1: "neg"}.get((v[k] or {}).get("sign", 0), "flat") for k in ("1H", "4H", "1D")}
+        rows.append(f"<tr data-sym='{esc(s)}' data-s1h='{sg['1H']}' data-s4h='{sg['4H']}' data-s1d='{sg['1D']}'>"
+                    f"<td class='l'><b>{esc(s)}</b></td>{slope_cells(v['1H'], 'candle')}{slope_cells(v['4H'], 'candle')}{slope_cells(v['1D'], 'day')}"
                     f"<td class='l {cls}'>{txt}</td></tr>")
     n = len(sl)
     p1 = sum(1 for v in sl.values() if (v["1H"] or {}).get("sign", 0) > 0)
@@ -689,12 +691,19 @@ def slope_tab(sl, clock1, clock4, clockd):
 <div class="headline">Slope of the Rolling VWAP - 1H candle closed {datetime.fromtimestamp(clock1, BKK):%H:%M} · 4H candle closed {bkk_str(clock4, False)} · daily candle closed {dtxt}</div>
 <p class="rule"><b>Slope</b> = the Rolling VWAP on the last closed candle minus the Rolling VWAP one candle earlier: <b>Positive</b> = rising,
 <b>Negative</b> = falling. 1H uses the template&rsquo;s 1H RVWAP (automatic 1-day period); 4H the 4H RVWAP (automatic 3-day period); Daily uses the Daily RVWAP (automatic 30.4375-day period),
-both hlc3, tick-volume weighted, minimum 10 bars. The change is shown in pips (FX) or index points and as a share of that timeframe&rsquo;s ATR.
+all hlc3, tick-volume weighted, minimum 10 bars. The change is shown in pips (FX) or index points and as a share of that timeframe&rsquo;s ATR.
 <b>Same sign for</b> = how many candles in a row the slope has had this sign. Recalculated automatically: the 1H columns change every hour, the 4H columns when a 4H candle closes,
 the Daily columns when the daily candle closes at the US close (17:00 New York).</p>
 {tiles}
+<div class="filters" id="slope-filters">
+<label>Pair<select id="f-sym"><option value="">All pairs</option>{''.join(f'<option value="{esc(s)}">{esc(s)}</option>' for s in TV if s in sl)}</select></label>
+{''.join(f'<label>{lbl} slope<select id="f-{k}"><option value="">Any</option><option value="pos">Positive</option><option value="neg">Negative</option></select></label>'
+         for k, lbl in (("s1h", "1H"), ("s4h", "4H"), ("s1d", "Daily")))}
+<button type="button" class="fbtn" id="f-reset">Clear filters</button>
+<span class="small mut" id="f-count"></span></div>
 {table(SLOPE_HEAD, rows, 'No data.')}
-<p class="small mut">Sorted: all three positive first, then mixed, then all three negative.</p>"""
+<p class="small mut">Sorted: all three positive first, then mixed, then all three negative. Pick a pair, and/or set any timeframe to Positive or
+Negative to keep only the pairs whose slope matches; filters combine (e.g. 1H, 4H and Daily all Positive).</p>"""
 
 
 # ---------------------------------------------------------------- recommendation record tab
@@ -856,6 +865,11 @@ section{margin-top:26px}section>h3{font-size:15px;margin:0 0 10px}
 details.day{margin:0 0 10px}details.day>summary{cursor:pointer;padding:8px 2px;font-size:14px}
 details.day>.hist,details.day>.box{margin-top:4px}
 .disc{margin-top:30px;color:var(--muted);font-size:12px}a{color:var(--accent)}
+.filters{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:4px 0 12px}
+.filters label{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2)}
+.filters select{font:inherit;font-size:13px;padding:5px 8px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.fbtn{font:inherit;font-size:13px;padding:5px 12px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--ink2);cursor:pointer}
+tr[hidden]{display:none}
 """
 
 JS = """
@@ -867,6 +881,19 @@ function show(k){if(!document.getElementById('pane-'+k))k='h1';
 tabs.forEach(t=>t.addEventListener('click',()=>{show(t.dataset.k);history.replaceState(null,'','#'+t.dataset.k)}));
 let k0=location.hash.slice(1);if(!k0){try{k0=localStorage.getItem('rvwap-tab')||''}catch(e){k0=''}}
 show(k0||'h1');
+(function(){const box=document.getElementById('slope-filters');if(!box)return;
+ const ids=['f-sym','f-s1h','f-s4h','f-s1d'],sel=ids.map(i=>document.getElementById(i));
+ const rows=[...box.parentElement.querySelectorAll('tr[data-sym]')],cnt=document.getElementById('f-count');
+ function apply(){const [p,a,b,c]=sel.map(s=>s.value);let n=0;
+  rows.forEach(r=>{const ok=(!p||r.dataset.sym===p)&&(!a||r.dataset.s1h===a)&&(!b||r.dataset.s4h===b)&&(!c||r.dataset.s1d===c);
+   r.hidden=!ok;if(ok)n++});
+  cnt.textContent='Showing '+n+' of '+rows.length+' pairs';
+  try{localStorage.setItem('rvwap-slope-f',JSON.stringify(sel.map(s=>s.value)))}catch(e){}}
+ try{const v=JSON.parse(localStorage.getItem('rvwap-slope-f')||'null');
+  if(Array.isArray(v))v.forEach((x,i)=>{if(sel[i]&&[...sel[i].options].some(o=>o.value===x))sel[i].value=x})}catch(e){}
+ sel.forEach(s=>s.addEventListener('change',apply));
+ document.getElementById('f-reset').addEventListener('click',()=>{sel.forEach(s=>s.value='');apply()});
+ apply()})();
 """
 
 
