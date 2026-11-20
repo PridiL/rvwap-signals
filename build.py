@@ -706,6 +706,87 @@ the Daily columns when the daily candle closes at the US close (17:00 New York).
 Negative to keep only the pairs whose slope matches; filters combine (e.g. 1H, 4H and Daily all Positive).</p>"""
 
 
+# ---------------------------------------------------------------- backtest tab (static results)
+BT_FILE = ROOT / "backtest" / "slope_backtest.json"
+
+
+def bt_tab():
+    if not BT_FILE.exists():
+        return '<div class="box small">Backtest results not available.</div>'
+    raw = BT_FILE.read_text(encoding="utf-8")
+    d = json.loads(raw)
+    tvrows = "".join(f"<tr><td class='l'><b>{esc(s)}</b></td><td class='l'>{'Daily &rarr; 4H' if sy == 'D>4H' else '4H &rarr; 1H'}</td>"
+                     f"<td class='l'>{esc(fr)}</td><td>{n}</td><td>{pc}%</td></tr>" for s, sy, fr, n, pc in d["tv_check"])
+    return f"""
+<div class="headline">Backtest: RVWAP slope turn + price cross, with the bigger timeframe&rsquo;s slope</div>
+<p class="rule"><b>Daily &rarr; 4H.</b> LONG when the Daily RVWAP slope is positive, and on the same 4H candle the 4H RVWAP slope turns from
+negative to positive <i>and</i> the 4H close crosses up through the 4H RVWAP. SHORT is the mirror (Daily slope negative, 4H slope turns
+positive &rarr; negative, 4H close crosses down).<br><b>4H &rarr; 1H.</b> The same with the 4H RVWAP slope as the filter and 1H candles for
+the slope turn and the cross.<br>
+Slope = RVWAP minus the RVWAP one candle earlier (as on the slope tab); the bigger timeframe&rsquo;s slope is read from its last
+<b>closed</b> candle when the entry candle closes, so nothing from the future is used. Entry at the close of the signal candle, exit at the
+close 1, 3 or 5 candles later (of the entry timeframe). Cost = one Dukascopy spread per trade. Moves are in ATR(14) of the entry
+timeframe, so FX pairs and indices can be added together. {d['markets']} markets (28 FX pairs + 9 indices), {esc(d['period']['from'])} to
+{esc(d['period']['to'])}, Dukascopy hourly prices (TradingView only serves 1H data back to 2026).</p>
+<div class="box small" style="max-width:960px;margin-bottom:14px"><b>What it shows.</b> No version makes money after the spread.
+The <b>slope turn</b> is the useful part: crosses where the RVWAP slope turns on the same candle do better than plain crosses in both
+systems. Adding the bigger timeframe&rsquo;s slope does not help: crosses with the bigger slope alone are worse than plain crosses, and
+the full rule is about the same as the slope turn on its own (worse at 5 candles). The best cell is Daily &rarr; 4H <b>longs</b> held 3
+candles (+0.044 ATR before costs, about +0.034 better than a random long), but the spread (about 0.076 ATR) is bigger than that, shorts
+do worse, and 2023-2025 were negative years for Daily &rarr; 4H.</div>
+<div class="filters">
+<label>System<select id="bt-sys"><option value="D>4H">Daily &rarr; 4H</option><option value="4H>1H">4H &rarr; 1H</option></select></label>
+<label>Direction<select id="bt-dir"><option value="BOTH">Long + short</option><option value="LONG">Long</option><option value="SHORT">Short</option></select></label>
+<label>Hold<select id="bt-hold"><option value="1">1 candle</option><option value="3" selected>3 candles</option><option value="5">5 candles</option></select></label>
+</div>
+<div id="bt-cards" class="stats"></div>
+<section><h3>Your rule against its parts</h3><div class="hist box"><table id="bt-cmp"></table></div>
+<p class="small mut">Every cross = any close through the entry RVWAP. Cross + slope turn = the cross on the candle where the entry RVWAP slope
+turns the same way (no bigger-timeframe filter). Cross + bigger slope = the cross with the bigger timeframe&rsquo;s slope the same way (no turn).
+Random = every candle traded in that direction (a long-only random entry earns the market&rsquo;s drift). t = average &divide; its standard error
+(about 2 or more = unlikely to be luck). Years = years with a positive average before costs (2016 and 2026 are part years).</p></section>
+<section><h3>Your rule, year by year</h3><div class="hist box"><table id="bt-year"></table></div></section>
+<section><h3>Your rule, FX pairs vs indices</h3><div class="hist box"><table id="bt-grp"></table></div></section>
+<section><h3>Your rule, market by market</h3><div class="hist box"><table id="bt-sym"></table></div>
+<p class="small mut">Sorted by the average before costs. Pips for FX, index points for indices.</p></section>
+<section><h3>Check against TradingView</h3><div class="hist box"><table><thead><tr><th class='l'>Market</th><th class='l'>System</th>
+<th class='l'>From</th><th>TradingView signals</th><th>Same candle in the backtest</th></tr></thead><tbody>{tvrows}</tbody></table></div>
+<p class="small mut">The same rule run on the TradingView prices this dashboard uses (OANDA / CAPITALCOM), over the history TradingView serves.
+FX signals match closely; index CFDs from Dukascopy differ more from TradingView&rsquo;s index feeds (sessions and volume), so index results
+are a rougher guide. The RVWAP itself was checked equal to the template&rsquo;s TradingView indicator on 1H, 4H and Daily.</p></section>
+<script type="application/json" id="bt-data">{raw}</script>"""
+
+
+BT_JS = r"""
+(function(){const el=document.getElementById('bt-data');if(!el)return;const D=JSON.parse(el.textContent);
+ const $=id=>document.getElementById(id),f=(x,d)=>x==null?'–':(x>0?'+':'')+x.toFixed(d),cls=x=>x==null?'mut':x>0?'pos':x<0?'neg':'mut';
+ const NAMES={cross:'Every cross',cross_turn:'Cross + slope turn',cross_big:'Cross + bigger slope',rule:'Your rule (all three)'};
+ function draw(){const S=$('bt-sys').value,Dr=$('bt-dir').value,H=+$('bt-hold').value;
+  const P=D.pooled.filter(r=>r.system===S&&r.dir===Dr&&r.hold===H);const R=P.find(r=>r.set==='rule');
+  $('bt-cards').innerHTML=R?[[R.n.toLocaleString(),'trades (your rule)'],[R.win.toFixed(1)+'%','win rate before costs'],
+   [f(R.avg_atr,3)+' ATR','average move before costs'],[f(R.avg_atr_net,3)+' ATR','average after the spread'],[R.years_pos,'years positive before costs']]
+   .map(([b,s])=>'<div class="stat"><b>'+b+'</b><span>'+s+'</span></div>').join(''):'';
+  let h='<thead><tr><th class="l">Entries</th><th>Trades</th><th>Win %</th><th>Avg before costs (ATR)</th><th>After spread (ATR)</th><th>t</th><th>Years +</th></tr></thead><tbody>';
+  ['cross','cross_turn','cross_big','rule'].forEach(k=>{const r=P.find(x=>x.set===k);if(!r)return;
+   h+='<tr'+(k==='rule'?' class="now"':'')+'><td class="l">'+(k==='rule'?'<b>'+NAMES[k]+'</b>':NAMES[k])+'</td><td>'+r.n.toLocaleString()+'</td><td>'+r.win.toFixed(1)+
+   '</td><td class="'+cls(r.avg_atr)+'">'+f(r.avg_atr,4)+'</td><td class="'+cls(r.avg_atr_net)+'">'+f(r.avg_atr_net,4)+'</td><td>'+f(r.t,2)+'</td><td>'+r.years_pos+'</td></tr>'});
+  if(R&&Dr!=='BOTH')h+='<tr><td class="l mut">Random entry, same direction</td><td class="mut">every candle</td><td></td><td class="'+cls(R.base_random)+'">'+f(R.base_random,4)+'</td><td></td><td></td><td></td></tr>';
+  $('bt-cmp').innerHTML=h+'</tbody>';
+  const row=(a,r)=>'<tr><td class="l">'+a+'</td><td>'+r.n.toLocaleString()+'</td><td>'+r.win.toFixed(1)+'</td><td class="'+cls(r.avg_atr)+'">'+f(r.avg_atr,4)+
+   '</td><td class="'+cls(r.avg_atr_net)+'">'+f(r.avg_atr_net,4)+'</td><td>'+f(r.t,2)+'</td></tr>';
+  const head1='<thead><tr><th class="l">#</th><th>Trades</th><th>Win %</th><th>Avg before costs (ATR)</th><th>After spread (ATR)</th><th>t</th></tr></thead><tbody>';
+  $('bt-year').innerHTML=head1.replace('#','Year')+D.by_year.filter(r=>r.system===S&&r.dir===Dr&&r.hold===H).sort((a,b)=>a.year-b.year).map(r=>row(r.year,r)).join('')+'</tbody>';
+  $('bt-grp').innerHTML=head1.replace('#','Group')+D.by_group.filter(r=>r.system===S&&r.dir===Dr&&r.hold===H).map(r=>row(r.group==='Index'?'Indices':'FX pairs',r)).join('')+'</tbody>';
+  const sy=D.by_symbol.filter(r=>r.system===S&&r.dir===Dr&&r.hold===H).sort((a,b)=>b.avg_atr-a.avg_atr);
+  $('bt-sym').innerHTML='<thead><tr><th class="l">Market</th><th>Trades</th><th>Win %</th><th>Avg before costs (ATR)</th><th>After spread (ATR)</th><th>Avg pips/pts before</th><th>After spread</th><th>t</th></tr></thead><tbody>'+
+   sy.map(r=>'<tr><td class="l"><b>'+r.sym+'</b></td><td>'+r.n+'</td><td>'+r.win.toFixed(1)+'</td><td class="'+cls(r.avg_atr)+'">'+f(r.avg_atr,3)+'</td><td class="'+cls(r.avg_atr_net)+'">'+f(r.avg_atr_net,3)+
+   '</td><td class="'+cls(r.avg_native)+'">'+f(r.avg_native,1)+'</td><td class="'+cls(r.avg_native_net)+'">'+f(r.avg_native_net,1)+'</td><td>'+f(r.t,2)+'</td></tr>').join('')+'</tbody>';
+  try{localStorage.setItem('rvwap-bt',JSON.stringify([S,Dr,H]))}catch(e){}}
+ try{const v=JSON.parse(localStorage.getItem('rvwap-bt')||'null');if(Array.isArray(v)){$('bt-sys').value=v[0];$('bt-dir').value=v[1];$('bt-hold').value=String(v[2])}}catch(e){}
+ ['bt-sys','bt-dir','bt-hold'].forEach(i=>$(i).addEventListener('change',draw));draw()})();
+"""
+
+
 # ---------------------------------------------------------------- recommendation record tab
 REC_HEAD = ("<tr><th class='l'>Time (BKK)</th><th class='l'>Pair</th><th class='l'>Signal</th><th>Grade</th><th>Cross rate</th>"
             "<th>Current rate</th><th>Distance</th><th>Distance (ATR)</th></tr>")
@@ -910,7 +991,8 @@ def render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missin
 <button class="tab" role="tab" data-k="rec" aria-selected="false">1H recommendation record</button>
 <button class="tab" role="tab" data-k="rec4" aria-selected="false">4H recommendation record</button>
 <button class="tab" role="tab" data-k="recd" aria-selected="false">Daily (US close) record</button>
-<button class="tab" role="tab" data-k="h4" aria-selected="false">4-hour RVWAP crosses</button></div>
+<button class="tab" role="tab" data-k="h4" aria-selected="false">4-hour RVWAP crosses</button>
+<button class="tab" role="tab" data-k="bt" aria-selected="false">Backtest: slope turn + cross</button></div>
 {miss}
 <div class="pane" id="pane-h1">{hourly_tab(view, h1, h4, clock1, state1)}</div>
 <div class="pane" id="pane-slope" hidden>{slope_tab(sl or {}, clock1, clock4, clockd)}</div>
@@ -918,9 +1000,10 @@ def render(view, h1, h4, clock1, clock4, state1, state4, rec, rec4, recd, missin
 <div class="pane" id="pane-rec4" hidden>{rec_tab(rec4, h1, clock1, "4H")}</div>
 <div class="pane" id="pane-recd" hidden>{rec_tab(recd, h1, clock1, "1D")}</div>
 <div class="pane" id="pane-h4" hidden>{four_tab(h4, clock4, state4)}</div>
+<div class="pane" id="pane-bt" hidden>{bt_tab()}</div>
 <p class="disc">Generated automatically every hour from TradingView prices. A mechanical signal, not a trade recommendation and not
 financial advice. Levels can be wrong or stale; check the chart before acting.</p>
-</div><script>{JS}</script></body></html>"""
+</div><script>{JS}{BT_JS}</script></body></html>"""
 
 
 PRIVACY = {
